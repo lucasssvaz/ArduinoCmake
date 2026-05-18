@@ -193,33 +193,6 @@ def _link_combine_template(expanded: dict[str, str]) -> str:
     return ""
 
 
-def link_combine_object_paths(plan: BuildPlan) -> list[Path]:
-    """Paths for ``{object_files}`` in ``recipe.*.combine.pattern`` (non-core only).
-
-    Matches ``arduino-cli`` ``internal/arduino/builder/linker.go``:
-
-    1. sketch object files
-    2. library object files (detector / resolver order)
-    3. variant object files (Arduino stores these as ``coreObjectsFiles`` alongside
-       ``core.a`` — core ``.c``/``.cpp`` live in the archive, not in ``object_files``)
-
-    ESP32's combine recipe wraps these with ``core.a`` inside ``-Wl,--start-group``;
-    link order affects symbol resolution and ``--gc-sections`` outcomes vs. putting
-    libraries before the sketch.
-    """
-    sketch_objs: list[Path] = []
-    lib_objs: list[Path] = []
-    variant_objs: list[Path] = []
-    for so in plan.sources:
-        if so.kind == "sketch":
-            sketch_objs.append(so.object_path)
-        elif so.kind == "lib":
-            lib_objs.append(so.object_path)
-        elif so.kind == "variant":
-            variant_objs.append(so.object_path)
-    return sketch_objs + lib_objs + variant_objs
-
-
 def _expand_combine(plan: BuildPlan, other_objs: list[Path]) -> str:
     tmpl = _link_combine_template(plan.expanded)
     if not tmpl:
@@ -497,7 +470,7 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
 
     bd = plan.build_dir.resolve()
     core_objs = [so.object_path for so in plan.sources if so.kind == "core"]
-    other_objs = link_combine_object_paths(plan)
+    other_objs = [so.object_path for so in plan.sources if so.kind != "core"]
 
     py_exe = str(Path(sys.executable).resolve())
     lines: list[str] = [

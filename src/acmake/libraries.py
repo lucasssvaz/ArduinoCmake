@@ -362,64 +362,15 @@ def _library_source_candidate_paths(lib: Library) -> list[Path]:
     return candidates
 
 
-def _library_header_candidate_paths(lib: Library) -> list[Path]:
-    """Like :func:`_library_source_candidate_paths` but only Arduino-style ``*.h*`` APIs."""
-    return [
-        p
-        for p in _library_source_candidate_paths(lib)
-        if p.suffix.lower() in _HEADER_SUFFIX_FOR_INDEX
-    ]
-
-
-def _iter_transitive_include_enqueues_from_headers_only(
-    lib: Library, *, max_total_bytes: int = 3_000_000
-) -> list[tuple[str, str]]:
-    """``(include_token, provenance)`` used to **enqueue more libraries** during resolution."""
-    items: list[tuple[str, str]] = []
-    total = 0
-    lib_root = lib.root.resolve()
-    seen_files: set[Path] = set()
-    for rp in _library_header_candidate_paths(lib):
-        if rp in seen_files:
-            continue
-        seen_files.add(rp)
-        try:
-            txt = rp.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        total += len(txt)
-        try:
-            rel = str(rp.relative_to(lib_root)).replace("\\", "/")
-        except ValueError:
-            rel = rp.name
-        for h in includes_from_source(txt):
-            items.append(
-                (
-                    h,
-                    f'in library "{lib.name}" file {rel}: #include "{h}.h"',
-                )
-            )
-        if total >= max_total_bytes:
-            break
-    return items
-
-
 def _iter_transitive_include_enqueues(
     lib: Library, *, max_total_bytes: int = 3_000_000
 ) -> list[tuple[str, str]]:
-    """``(include_token, provenance)`` from this library's ``.c`` / ``.cpp`` sources.
-
-    Used for **include-path closure** among already-linked libs (cached compiles): a
-    ``.cpp`` may ``#include`` another linked library header without exporting that
-    dependency from a public ``.h``.
-    """
+    """``(include_token, provenance)`` from this library's sources (for resolver queue)."""
     items: list[tuple[str, str]] = []
     total = 0
     lib_root = lib.root.resolve()
     seen_files: set[Path] = set()
     for rp in _library_source_candidate_paths(lib):
-        if rp.suffix.lower() in _HEADER_SUFFIX_FOR_INDEX:
-            continue
         if rp in seen_files:
             continue
         seen_files.add(rp)
@@ -483,10 +434,11 @@ def resolve_libraries_for_sketch(
     are treated as satisfied by the platform: no library is linked for that include
     token, and library stem index entries do not override those names.
 
-    Transitive **library** selection scans each linked library's public headers
-    (``.h`` / ``.hh`` / ``.hpp`` under the library tree, excluding ``examples/`` /
-    ``tests/``, etc.). ``library.properties`` ``depends=`` is also honored. Pass
-    ``resolution_notes`` for ``-v`` / ``-vv`` logging.
+    Transitive discovery scans each linked library's sources (excluding ``examples/``,
+    ``tests/``, etc.): a token like ``ArduinoJson`` appears when some other library's
+    ``.cpp``/``.h`` contains ``#include "ArduinoJson.h"`` — that is expected even if your
+    sketch never mentions it. Pass ``resolution_notes`` to record the first discovery
+    path for each linked library (used for ``-v`` / ``-vv`` logging).
     """
     by_key = discover_libraries(library_dirs)
     platform_stems = _platform_header_stems(
@@ -507,6 +459,7 @@ def resolve_libraries_for_sketch(
 
     for h in includes_from_source(sketch_cpp_text):
         enqueue(h, 'sketch (preprocessed sketch.cpp): #include "{0}.h"'.format(h))
+    # Same order as ``build_sketch_cpp_body`` / ``sketch.cpp`` (not alphabetical glob).
     for p in list_sketch_inos(sketch_dir):
         for h in includes_from_source(p.read_text(encoding="utf-8", errors="replace")):
             enqueue(h, f'sketch ({p.name}): #include "{h}.h"')
@@ -541,7 +494,7 @@ def resolve_libraries_for_sketch(
                     public_header_relpath=pub,
                 )
             )
-        for h, h_via in _iter_transitive_include_enqueues_from_headers_only(lib):
+        for h, h_via in _iter_transitive_include_enqueues(lib):
             enqueue(h, h_via)
         for dep in lib.depends:
             d = dep.strip()
