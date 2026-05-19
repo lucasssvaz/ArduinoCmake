@@ -433,7 +433,7 @@ def inject_build_paths(
         extra["build.fqbn"] = fqbn_string
         extra["runtime.fqbn"] = fqbn_string
     if fqbn_arch:
-        extra.setdefault("build.arch", fqbn_arch)
+        extra.setdefault("build.arch", fqbn_arch.upper())
     out = dict(expanded)
     out.update(extra)
     out = apply_runtime_os_property_overrides(out)
