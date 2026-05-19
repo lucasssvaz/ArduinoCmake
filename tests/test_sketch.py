@@ -24,17 +24,37 @@ def test_prototypes_before_first_function_after_typedefs(tmp_path: Path) -> None
         "#define X 1\n"
         "typedef enum { A, B } MyEnum;\n"
         "typedef struct { int x; MyEnum e; } MyData;\n"
-        "static void handle(MyData *p) {}\n"
+        "static void internal(MyData *p) {}\n"
+        "void handle(MyData *p) { internal(p); }\n"
         "void setup() { handle(nullptr); }\n"
         "void loop() {}\n",
         encoding="utf-8",
     )
     out = build_sketch_cpp_body([ino])
     proto = out.index("// acmake: forward declarations")
-    handle_impl = out.index("static void handle(MyData")
+    handle_impl = out.index("void handle(MyData")
     typedef_struct = out.index("typedef struct")
     assert typedef_struct < proto < handle_impl
-    assert "static void handle(MyData *p);" in out
+    assert "void handle(MyData *p);" in out
+    assert "static void internal" not in out.split("// acmake:")[0]
+
+
+def test_no_forward_decl_for_static_functions(tmp_path: Path) -> None:
+    """static functions must not get forward declarations (they can be inside #ifdef blocks)."""
+    ino = tmp_path / "S" / "S.ino"
+    ino.parent.mkdir(parents=True)
+    ino.write_text(
+        "static void helper() {}\n"
+        "static int compute(int x) { return x; }\n"
+        "void publicFn() { helper(); compute(1); }\n"
+        "void setup() { publicFn(); }\n"
+        "void loop() {}\n",
+        encoding="utf-8",
+    )
+    decls = extract_sketch_function_forward_declarations(ino.read_text())
+    assert not any("helper" in d for d in decls)
+    assert not any("compute" in d for d in decls)
+    assert any("publicFn" in d for d in decls)
 
 
 def test_forward_decl_strips_default_arguments(tmp_path: Path) -> None:
@@ -93,8 +113,8 @@ def test_forward_decl_preserves_extern_c_linkage(tmp_path: Path) -> None:
     assert 'extern "C" void c_api(int x);' in out
 
 
-def test_forward_decl_preserves_static_specifier(tmp_path: Path) -> None:
-    """``static`` (and similar leading specifiers) must appear on the prototype line."""
+def test_forward_decl_skips_static_specifier(tmp_path: Path) -> None:
+    """``static`` functions must not get forward declarations (conditional compilation safety)."""
     ino = tmp_path / "S" / "S.ino"
     ino.parent.mkdir(parents=True)
     ino.write_text(
@@ -105,9 +125,7 @@ def test_forward_decl_preserves_static_specifier(tmp_path: Path) -> None:
     )
     entries = extract_sketch_forward_declaration_entries([ino])
     decls = [d for _, _, d in entries]
-    assert any(d.strip() == "static void measureAndSleep();" for d in decls)
-    out = build_sketch_cpp_body([ino])
-    assert "static void measureAndSleep();" in out
+    assert not any("measureAndSleep" in d for d in decls)
 
 
 def test_forward_declarations_skip_setup_and_loop():
@@ -151,7 +169,8 @@ def test_has_include_inside_setup_does_not_move_protos(tmp_path: Path) -> None:
     ino.write_text(
         '#include "Arduino.h"\n'
         "#define X 1\n"
-        "static void helper() { }\n"
+        "static void internal() { }\n"
+        "void helper() { internal(); }\n"
         "void setup() {\n"
         '#if __has_include("optional.h")\n'
         "  helper();\n"
@@ -162,9 +181,10 @@ def test_has_include_inside_setup_does_not_move_protos(tmp_path: Path) -> None:
     )
     out = build_sketch_cpp_body([ino])
     proto = out.index("// acmake: forward declarations")
-    helper_impl = out.index("static void helper() {")
+    helper_impl = out.index("void helper() {")
     assert proto < helper_impl
-    assert "static void helper();" in out[proto:helper_impl]
+    assert "void helper();" in out[proto:helper_impl]
+    assert "static void internal();" not in out
     setup_body = out.split("void setup() {", 1)[1].split("void loop()", 1)[0]
     assert "// acmake: forward declarations" not in setup_body
     assert '__has_include("optional.h")' in setup_body

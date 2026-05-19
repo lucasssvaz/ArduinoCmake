@@ -201,6 +201,8 @@ def _parse_sketch_fn_forward_decl(line: str) -> tuple[str, str] | None:
     if not m:
         return None
     spec = m.group(1).strip()
+    if "static" in spec.split():
+        return None
     retish, name = m.group(2).strip(), m.group(3)
     if name in _REJECT_FN_NAMES:
         return None
