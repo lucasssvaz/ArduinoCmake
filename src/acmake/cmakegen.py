@@ -193,6 +193,19 @@ def _link_combine_template(expanded: dict[str, str]) -> str:
     return ""
 
 
+_LINK_ORDER = {"sketch": 0, "lib": 1, "variant": 2}
+
+
+def link_combine_object_paths(plan: BuildPlan) -> list[Path]:
+    """Non-core object paths ordered for the link line (sketch -> libraries -> variant).
+
+    Arduino-cli uses this order in ``recipe.c.combine.pattern``'s ``{object_files}``.
+    """
+    objs = [so for so in plan.sources if so.kind != "core"]
+    objs.sort(key=lambda so: _LINK_ORDER.get(so.kind, 99))
+    return [so.object_path for so in objs]
+
+
 def _expand_combine(plan: BuildPlan, other_objs: list[Path]) -> str:
     tmpl = _link_combine_template(plan.expanded)
     if not tmpl:
@@ -470,7 +483,7 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
 
     bd = plan.build_dir.resolve()
     core_objs = [so.object_path for so in plan.sources if so.kind == "core"]
-    other_objs = [so.object_path for so in plan.sources if so.kind != "core"]
+    other_objs = link_combine_object_paths(plan)
 
     py_exe = str(Path(sys.executable).resolve())
     lines: list[str] = [

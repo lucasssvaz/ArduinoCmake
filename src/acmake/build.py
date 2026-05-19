@@ -31,7 +31,6 @@ from acmake.libraries import (
     resolve_libraries_for_sketch,
 )
 from acmake.properties import (
-    apply_compiler_warning_level,
     collapse_duplicate_path_slashes_in_properties,
     default_menu_options_for_board,
     escape_dquoted_defines_in_properties,
@@ -307,6 +306,13 @@ def prepare_build(
     merged = merge_platform_and_board(platform_txt, board_props)
     merged = merged_with_build_properties(merged, build_properties)
 
+    warn_for_cache: str | None = None
+    if compiler_warnings:
+        warn_for_cache = normalize_compiler_warning_level(compiler_warnings)
+        wkey = f"compiler.warning_flags.{warn_for_cache}"
+        if wkey in merged:
+            merged["compiler.warning_flags"] = (merged[wkey] or "").strip()
+
     build_proj = sketch_build_project_name(sketch_dir)
     sketch_build = build_dir / "sketch"
     sketch_build.mkdir(parents=True, exist_ok=True)
@@ -390,14 +396,6 @@ def prepare_build(
     expanded = collapse_duplicate_path_slashes_in_properties(expanded)
     # ``includes`` must use the same collapsed core/variant paths as the rest of *expanded*.
     expanded["includes"] = _build_includes(expanded, lib_roots)
-
-    warn_for_cache: str | None = None
-    if compiler_warnings:
-        warn_for_cache = normalize_compiler_warning_level(compiler_warnings)
-        expanded = apply_compiler_warning_level(expanded, warn_for_cache)
-        expanded = escape_dquoted_defines_in_properties(expanded)
-        expanded = collapse_duplicate_path_slashes_in_properties(expanded)
-        expanded["includes"] = _build_includes(expanded, lib_roots)
 
     obj_dir = build_dir / "objects"
     obj_dir.mkdir(parents=True, exist_ok=True)

@@ -57,6 +57,59 @@ def test_object_cache_key_includes_warnings_level() -> None:
     assert with_warn == want
 
 
+def test_warning_level_propagates_into_compile_flags() -> None:
+    """--warnings must resolve into compiler.c.flags before property expansion bakes in the default.
+
+    Regression: if apply_compiler_warning_level runs after expand_properties,
+    {compiler.warning_flags} is already replaced with the default (-w) and the
+    override has no effect.
+    """
+    from acmake.properties import expand_properties, merged_with_build_properties
+
+    platform = {
+        "compiler.warning_flags": "-w",
+        "compiler.warning_flags.none": "-w",
+        "compiler.warning_flags.default": "",
+        "compiler.warning_flags.more": "-Wall",
+        "compiler.warning_flags.all": "-Wall -Wextra",
+        "compiler.c.flags": "-MMD {compiler.warning_flags} -Os",
+    }
+    merged = merged_with_build_properties(
+        platform,
+        ["compiler.warning_flags.all=-Wall -Werror=all -Wextra"],
+    )
+    lv = "all"
+    wkey = f"compiler.warning_flags.{lv}"
+    if wkey in merged:
+        merged["compiler.warning_flags"] = (merged[wkey] or "").strip()
+
+    expanded = expand_properties(merged)
+    assert "-Wall" in expanded["compiler.c.flags"]
+    assert "-Werror=all" in expanded["compiler.c.flags"]
+    assert "-Wextra" in expanded["compiler.c.flags"]
+    assert "-w" not in expanded["compiler.c.flags"].split()
+
+
+def test_warning_level_all_without_build_property() -> None:
+    """--warnings all alone must replace the default -w with -Wall -Wextra."""
+    from acmake.properties import expand_properties
+
+    platform = {
+        "compiler.warning_flags": "-w",
+        "compiler.warning_flags.all": "-Wall -Wextra",
+        "compiler.cpp.flags": "-c {compiler.warning_flags} -Os",
+    }
+    lv = "all"
+    wkey = f"compiler.warning_flags.{lv}"
+    if wkey in platform:
+        platform["compiler.warning_flags"] = (platform[wkey] or "").strip()
+
+    expanded = expand_properties(platform)
+    assert "-Wall" in expanded["compiler.cpp.flags"]
+    assert "-Wextra" in expanded["compiler.cpp.flags"]
+    assert expanded["compiler.cpp.flags"] == "-c -Wall -Wextra -Os"
+
+
 def test_object_cache_key_includes_build_property_tag() -> None:
     f = FQBN.parse("arduino:avr:uno")
     a = f.object_cache_key(core_version="1.0", build_property_tag="abc123")

@@ -93,6 +93,23 @@ def test_inject_build_paths_sets_fqbn():
     assert "{build.fqbn}" not in out["build.extra_flags"]
 
 
+def test_inject_build_paths_arch_is_uppercase():
+    """build.arch must be uppercase per the Arduino platform spec."""
+    from acmake.properties import inject_build_paths
+
+    base = {"recipe": "-DARDUINO_ARCH_{build.arch}"}
+    out = inject_build_paths(
+        base,
+        runtime_platform_path="/plat/",
+        build_path="/b/",
+        build_project_name="sk",
+        sketch_path="/s/",
+        fqbn_arch="esp32",
+    )
+    assert out["build.arch"] == "ESP32"
+    assert out["recipe"] == "-DARDUINO_ARCH_ESP32"
+
+
 def test_inject_build_paths_sketch_path_expands(tmp_path):
     """``{sketch_path}`` is a platform-spec alias for the sketch directory (no trailing slash)."""
     from acmake.properties import inject_build_paths
