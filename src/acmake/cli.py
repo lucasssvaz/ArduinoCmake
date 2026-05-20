@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from acmake.board_list import list_installed_boards
-from acmake.build import prepare_build
+from acmake.build import collect_gcov_notes, prepare_build
 from acmake.properties import parse_build_property
 from acmake.cache_invalidate import clear_entire_object_cache
 from acmake.cmakegen import write_cmake
@@ -131,6 +131,7 @@ def cmd_compile(args: argparse.Namespace) -> int:
         verbose=args.verbose >= 2,
     )
     _run_cmake(out, args.verbose >= 1)
+    collect_gcov_notes(plan)
     if args.export_binaries:
         log.info("export-binaries: running recipe.hooks.savehex.*")
     run_hook_phases(
