@@ -9,6 +9,13 @@ from pathlib import Path
 from acmake.discovery import find_arduino_preprocessor
 
 _SKIP_PROTO_NAMES = frozenset({"setup", "loop"})
+
+_GCC_ATTRIBUTE_RE = re.compile(
+    r"\b__attribute__\s*\(\((?:[^()]*|\([^()]*\))*\)\)"
+)
+_PLACEMENT_ATTR_MACRO_RE = re.compile(
+    r"\b(?:[A-Z_][A-Z0-9_]*_ATTR|PROGMEM)\b"
+)
 # Names that must never get a forward declaration from this pass.
 _REJECT_FN_NAMES = _SKIP_PROTO_NAMES | frozenset(
     {
@@ -191,6 +198,20 @@ def _strip_default_arguments_from_param_list(params: str) -> str:
     return ", ".join(_strip_trailing_default_from_one_param(p) for p in parts)
 
 
+def _strip_placement_attrs(text: str) -> str:
+    """Remove GCC placement/section attributes from a forward declaration fragment.
+
+    Attribute macros such as ``IRAM_ATTR`` expand to ``__attribute__((section(...)))``
+    with a unique counter per usage, so repeating them on both prototype and definition
+    produces *conflicting attribute* warnings.  Stripping them from the prototype is
+    safe because placement attributes on a forward declaration have no effect — the
+    linker uses the definition's attributes.
+    """
+    text = _GCC_ATTRIBUTE_RE.sub("", text)
+    text = _PLACEMENT_ATTR_MACRO_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _parse_sketch_fn_forward_decl(line: str) -> tuple[str, str] | None:
     """If *line* is a one-line sketch function definition, return ``(name, decl);`` else ``None``."""
     raw = line.rstrip()
@@ -203,7 +224,7 @@ def _parse_sketch_fn_forward_decl(line: str) -> tuple[str, str] | None:
     spec = m.group(1).strip()
     if "static" in spec.split():
         return None
-    retish, name = m.group(2).strip(), m.group(3)
+    retish, name = _strip_placement_attrs(m.group(2).strip()), m.group(3)
     if name in _REJECT_FN_NAMES:
         return None
     if not retish:

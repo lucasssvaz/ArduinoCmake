@@ -384,6 +384,47 @@ def test_sketch_build_project_name_matches_primary_ino(tmp_path: Path) -> None:
     assert sketch_build_project_name(d) == "WiFiClient.ino"
 
 
+def test_forward_decl_strips_placement_attributes(tmp_path: Path) -> None:
+    """Attribute macros like IRAM_ATTR must not appear on prototypes (conflicting section attrs)."""
+    ino = tmp_path / "S" / "S.ino"
+    ino.parent.mkdir(parents=True)
+    ino.write_text(
+        '#include "Arduino.h"\n'
+        "#define IRAM_ATTR __attribute__((section(\".iram1\")))\n"
+        "void IRAM_ATTR buttonISR() { }\n"
+        "void IRAM_ATTR buttonISRWithArg(void *arg) { (void)arg; }\n"
+        "void setup() { buttonISR(); }\n"
+        "void loop() {}\n",
+        encoding="utf-8",
+    )
+    decls = [d for _, _, d in extract_sketch_forward_declaration_entries([ino])]
+    isr = [d for d in decls if "buttonISR" in d and "WithArg" not in d]
+    assert len(isr) == 1
+    assert "IRAM_ATTR" not in isr[0]
+    assert isr[0].strip() == "void buttonISR();"
+    isr_arg = [d for d in decls if "buttonISRWithArg" in d]
+    assert len(isr_arg) == 1
+    assert "IRAM_ATTR" not in isr_arg[0]
+    assert isr_arg[0].strip() == "void buttonISRWithArg(void *arg);"
+
+
+def test_forward_decl_strips_gcc_attribute_syntax(tmp_path: Path) -> None:
+    """Direct __attribute__ syntax must be stripped from prototypes."""
+    ino = tmp_path / "S" / "S.ino"
+    ino.parent.mkdir(parents=True)
+    ino.write_text(
+        "void __attribute__((section(\".iram1\"))) handler() { }\n"
+        "void setup() { handler(); }\n"
+        "void loop() {}\n",
+        encoding="utf-8",
+    )
+    decls = [d for _, _, d in extract_sketch_forward_declaration_entries([ino])]
+    handler = [d for d in decls if "handler" in d]
+    assert len(handler) == 1
+    assert "__attribute__" not in handler[0]
+    assert handler[0].strip() == "void handler();"
+
+
 def test_preprocessor_copy_skips_write_when_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
