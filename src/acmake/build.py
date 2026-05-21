@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
+import shutil
 import tempfile
 from collections import deque
 from dataclasses import dataclass, field
@@ -542,3 +544,59 @@ def expand_recipe_for_source(
     ctx["object_file"] = str(obj)
     ctx["includes"] = includes
     return expand_template(tmpl, ctx)
+
+
+def _has_coverage_flags(expanded: dict[str, str]) -> bool:
+    """True when ``--coverage`` appears in any compiler extra-flags property."""
+    for key in ("compiler.c.extra_flags", "compiler.cpp.extra_flags"):
+        if "--coverage" in expanded.get(key, ""):
+            return True
+    return False
+
+
+def collect_gcov_notes(plan: BuildPlan) -> list[Path]:
+    """Copy ``.gcno`` files from the object cache into ``<build_dir>/gcov/``.
+
+    GCC places ``.gcno`` notes next to each ``.o`` file.  When the shared
+    object cache is active, core / variant / library objects live in a temp
+    directory outside the build tree.
+
+    This helper copies every ``.gcno`` produced for the current build into
+    ``<build_dir>/gcov/<kind>/`` where *kind* is ``core``, ``variant``,
+    ``lib``, or ``sketch``.  Grouping by kind prevents name collisions when
+    different source trees contain files with the same basename (e.g. both
+    the core and a library ship ``IPAddress.cpp``).
+
+    Returns the list of destination paths (empty when coverage is not enabled
+    or no ``.gcno`` files exist).
+    """
+    if not _has_coverage_flags(plan.expanded):
+        return []
+
+    log = logging.getLogger("acmake")
+    gcov_dir = plan.build_dir / "gcov"
+
+    if gcov_dir.exists():
+        shutil.rmtree(gcov_dir)
+
+    copied: list[Path] = []
+
+    for so in plan.sources:
+        obj_name = so.object_path.name
+        if not obj_name.endswith(".o"):
+            continue
+        gcno = so.object_path.with_name(obj_name[:-2] + ".gcno")
+        if not gcno.is_file():
+            continue
+        kind_dir = gcov_dir / so.kind
+        kind_dir.mkdir(parents=True, exist_ok=True)
+        dest = kind_dir / gcno.name
+        try:
+            shutil.copy2(gcno, dest)
+            copied.append(dest)
+        except OSError as exc:
+            log.warning("Failed to copy %s -> %s: %s", gcno, dest, exc)
+
+    if copied:
+        log.info("Copied %d .gcno files to %s", len(copied), gcov_dir)
+    return copied
