@@ -53,3 +53,53 @@ def test_expand_upload_windows_uses_cmd_windows() -> None:
     }
     s = expand_upload_pattern(exp, "COM3").replace("\\", "/")
     assert "C:/p/tools/esptool/esptool.exe" in s
+
+
+def test_expand_upload_esp32_upload_flash_prefix_linux() -> None:
+    """{upload.flash_prefix} is defined once per tool and reused in upload.pattern."""
+    exp: dict[str, str] = {
+        "runtime.os": "linux",
+        "upload.tool": "esptool_py",
+        "upload.speed": "921600",
+        "upload.flags": "",
+        "upload.erase_cmd": "",
+        "upload.extra_flags": "",
+        "build.mcu": "esp32",
+        "build.bootloader_addr": "0x1000",
+        "build.path": "/tmp/build/",
+        "build.project_name": "Sk",
+        "runtime.platform.path": "/plat",
+        "tools.esptool_py.path": "/plat/tools/esptool",
+        "tools.esptool_py.cmd": "esptool",
+        "tools.esptool_py.upload.flash_prefix": 'python3 "/plat/tools/flasher.py"',
+        "tools.esptool_py.upload.flash_prefix.windows": '"/plat/tools/flasher.exe"',
+        "tools.esptool_py.upload.pattern": '{upload.flash_prefix} --esptool "{path}/{cmd}" --build-dir "{build.path}" {upload.pattern_args}',
+        "tools.esptool_py.upload.pattern_args": '--chip {build.mcu} --port "{serial.port}" end',
+    }
+    s = expand_upload_pattern(exp, "/dev/cuUSB0")
+    assert "{upload.flash_prefix}" not in s
+    assert "python3" in s
+    assert "/plat/tools/flasher.py" in s
+    assert "/plat/tools/esptool/esptool" in s
+
+
+def test_expand_upload_esp32_upload_flash_prefix_windows() -> None:
+    """On Windows, tools.<tool>.upload.flash_prefix.windows is selected."""
+    exp: dict[str, str] = {
+        "runtime.os": "windows",
+        "upload.tool": "esptool_py",
+        "build.path": "C:/b/",
+        "build.project_name": "Sk",
+        "runtime.platform.path": "C:/plat",
+        "tools.esptool_py.path": "C:/plat/tools/esptool",
+        "tools.esptool_py.cmd": "esptool",
+        "tools.esptool_py.cmd.windows": "esptool.exe",
+        "tools.esptool_py.upload.flash_prefix": 'python3 "C:/plat/tools/flasher.py"',
+        "tools.esptool_py.upload.flash_prefix.windows": '"C:/plat/tools/flasher.exe"',
+        "tools.esptool_py.upload.pattern": '{upload.flash_prefix} --esptool "{path}/{cmd}" {upload.pattern_args}',
+        "tools.esptool_py.upload.pattern_args": "--chip esp32 end",
+    }
+    s = expand_upload_pattern(exp, "COM3").replace("\\", "/")
+    assert "flasher.exe" in s
+    assert "python3" not in s
+    assert "esptool.exe" in s
