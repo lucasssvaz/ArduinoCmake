@@ -92,7 +92,7 @@ def _strip_sketch_source_path_from_compile_recipe(plan: BuildPlan, cmd: str) -> 
         if not p.endswith("/"):
             variants.add(p + "/")
         for pv in variants:
-            for q in (f'-I"{pv}"', f"-I'{pv}'"):
+            for q in (f'-I"{pv}"', f"-I'{pv}'", f'"-I{pv}"', f"'-I{pv}'"):
                 out = out.replace(q, " ")
     return " ".join(out.split())
 

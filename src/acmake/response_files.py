@@ -195,7 +195,7 @@ def ensure_build_response_stubs(build_dir: Path, sketch_dir: Path) -> None:
     sketch_opt = sketch_dir / "build_opt.h"
     if sketch_opt.is_file():
         _copy_file_if_contents_differ(sketch_opt, opt)
-    elif not opt.is_file():
+    elif not opt.is_file() or opt.stat().st_size != 0:
         opt.write_bytes(b"")
     fo = build_dir / "file_opts"
     if not fo.is_file():
