@@ -363,3 +363,34 @@ def test_ensure_build_libraries_stub_dirs_uses_root_folder_name(tmp_path: Path) 
     build = tmp_path / "out"
     ensure_build_libraries_stub_dirs(build, [lib])
     assert (build / "libraries" / "ESP_SR").is_dir()
+
+
+def test_ensure_build_libraries_stub_dirs_removes_stale_dirs(tmp_path: Path) -> None:
+    """Shared ``build_dir``: stale library stub dirs from previous sketches must be removed."""
+    sr = tmp_path / "from_pkg" / "ESP_SR"
+    sr.mkdir(parents=True)
+    wifi = tmp_path / "from_pkg" / "WiFi"
+    wifi.mkdir(parents=True)
+    lib_sr = Library(
+        root=sr,
+        name="ESP Speech Recognition",
+        architectures="esp32",
+        depends=(),
+        includes_override=None,
+    )
+    lib_wifi = Library(
+        root=wifi,
+        name="WiFi",
+        architectures="esp32",
+        depends=(),
+        includes_override=None,
+    )
+    build = tmp_path / "shared_out"
+    ensure_build_libraries_stub_dirs(build, [lib_sr, lib_wifi])
+    assert (build / "libraries" / "ESP_SR").is_dir()
+    assert (build / "libraries" / "WiFi").is_dir()
+
+    ensure_build_libraries_stub_dirs(build, [lib_wifi])
+    assert not (build / "libraries" / "ESP_SR").exists()
+    assert (build / "libraries" / "WiFi").is_dir()
+

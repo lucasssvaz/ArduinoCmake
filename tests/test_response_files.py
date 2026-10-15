@@ -125,3 +125,29 @@ def test_ensure_stubs_preserves_existing_file_opts(tmp_path: Path) -> None:
     fo.write_bytes(b"-O2\n")
     ensure_build_response_stubs(b, s)
     assert fo.read_bytes() == b"-O2\n"
+
+
+def test_ensure_stubs_clears_stale_build_opt_when_sketch_has_none(
+    tmp_path: Path,
+) -> None:
+    """Shared ``build_dir``: switching from a sketch with ``build_opt.h`` to one without must clear it."""
+    b = tmp_path / "shared_build"
+    s_with = tmp_path / "SketchWithOpt"
+    s_with.mkdir()
+    (s_with / "build_opt.h").write_text("-DUPDATE_SIGN\n", encoding="utf-8")
+    s_without = tmp_path / "SketchWithoutOpt"
+    s_without.mkdir()
+
+    ensure_build_response_stubs(b, s_with)
+    opt = b / "build_opt.h"
+    assert opt.read_bytes() == b"-DUPDATE_SIGN\n"
+
+    ensure_build_response_stubs(b, s_without)
+    assert opt.read_bytes() == b""
+
+    # Subsequent sketch without build_opt.h must not touch mtime of already-empty build_opt.h.
+    t1 = opt.stat().st_mtime_ns
+    ensure_build_response_stubs(b, s_without)
+    t2 = opt.stat().st_mtime_ns
+    assert t1 == t2
+

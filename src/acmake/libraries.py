@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,8 @@ def ensure_build_libraries_stub_dirs(build_dir: Path, libraries: list[Library]) 
     Matches the Arduino IDE build layout. The ESP32 platform's
     ``recipe.hooks.objcopy.postobjcopy.*`` hooks gate on paths like
     ``{build.path}/libraries/ESP_SR`` and ``.../libraries/Insights``.
+    Stale subdirectories from a previous sketch in the same *build_dir*
+    are removed so postobjcopy hooks do not misfire.
     """
     root = build_dir / "libraries"
     root.mkdir(parents=True, exist_ok=True)
@@ -68,6 +71,9 @@ def ensure_build_libraries_stub_dirs(build_dir: Path, libraries: list[Library]) 
             continue
         seen.add(folder)
         (root / folder).mkdir(parents=True, exist_ok=True)
+    for child in root.iterdir():
+        if child.is_dir() and child.name not in seen:
+            shutil.rmtree(child, ignore_errors=True)
 
 
 def _arch_matches(lib_arch: str, fqbn_arch: str) -> bool:
