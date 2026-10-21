@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import subprocess
 import sys
@@ -11,9 +12,10 @@ from pathlib import Path
 
 from acmake.board_list import list_installed_boards
 from acmake.build import collect_gcov_notes, prepare_build
-from acmake.properties import parse_build_property
 from acmake.cache_invalidate import clear_entire_object_cache
+from acmake.cache_prune import prune_object_cache
 from acmake.cmakegen import write_cmake
+from acmake.properties import parse_build_property
 from acmake.hooks import PRE_NINJA_HOOK_PHASES, post_ninja_hook_phases, run_hook_phases
 from acmake.config import ArduinoPaths
 from acmake.fqbn import FQBN
@@ -26,6 +28,33 @@ def _cli_build_property(spec: str) -> str:
     """Validate ``KEY=VALUE`` for ``--build-property``; return *spec* unchanged."""
     parse_build_property(spec)
     return spec
+
+
+def _nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be finite and non-negative")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    for suffix in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or suffix == "TiB":
+            return (
+                f"{value:.0f} {suffix}"
+                if suffix == "B"
+                else f"{value:.1f} {suffix}"
+            )
+        value /= 1024
+    raise AssertionError("unreachable")
 
 
 def resolve_sketch_build_dir(
@@ -195,6 +224,25 @@ def cmd_cache_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cache_prune(args: argparse.Namespace) -> int:
+    root = Path(tempfile.gettempdir()) / "acmake_objcache"
+    result = prune_object_cache(
+        root,
+        max_age_days=args.max_age_days,
+        keep=args.keep,
+        dry_run=args.dry_run,
+    )
+    if result.directories == 0:
+        print(f"No cache entries eligible for pruning at {root}")
+        return 0
+    action = "Would remove" if args.dry_run else "Removed"
+    print(
+        f"{action} {result.directories} cache directories "
+        f"({_format_bytes(result.bytes)}) from {root}"
+    )
+    return 0
+
+
 def cmd_board_list(args: argparse.Namespace) -> int:
     paths = ArduinoPaths.from_env(
         Path(args.data_dir).expanduser() if args.data_dir else None,
@@ -342,6 +390,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete the entire shared object cache under the system temp dir (all FQBNs)",
     )
     cc.set_defaults(func=cmd_cache_clear)
+
+    cp = sub.add_parser(
+        "cache-prune",
+        help="Remove expired immutable cache generations",
+    )
+    cp.add_argument(
+        "--max-age-days",
+        type=_nonnegative_float,
+        default=30.0,
+        metavar="DAYS",
+        help="Remove cache entries unused for this many days (default: 30)",
+    )
+    cp.add_argument(
+        "--keep",
+        type=_nonnegative_int,
+        default=2,
+        metavar="N",
+        help="Keep at least N recent generations in each active group (default: 2)",
+    )
+    cp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be removed without changing the cache",
+    )
+    cp.set_defaults(func=cmd_cache_prune)
 
     bl = sub.add_parser("board", help="List installed board FQBNs")
     bl.add_argument(

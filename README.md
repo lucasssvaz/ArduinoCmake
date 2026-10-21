@@ -11,7 +11,7 @@ Python CLI that resolves an **FQBN**, discovers locally installed **Arduino core
 
 ## How to run the program
 
-Use any one of these; the CLI is the same (`compile`, `upload`, `cache-clear`, `board`).
+Use any one of these; the CLI is the same (`compile`, `upload`, `cache-prune`, `cache-clear`, `board`).
 
 | Method | When |
 |--------|------|
@@ -84,29 +84,45 @@ Object files for **core**, **variant**, and **each linked library** are shared u
 
 Layout (sketch ``.o`` files stay under the sketch build dir):
 
-- ``<temp>/acmake_objcache/<32-hex-key>/core/o/…`` and ``…/core/core.a``
-- ``<temp>/acmake_objcache/<32-hex-key>/variant/o/…``
-- ``<temp>/acmake_objcache/<32-hex-key>/lib/<LibraryName>_<hash>/o/…``
+- ``<temp>/acmake_objcache/<32-hex-key>/core_generations/<core-generation-sha256>/core/o/…`` and ``…/core/core.a``
+- ``…/core_generations/<core-generation-sha256>/variant/o/…``
+- ``…/library_generations/<platform-header-config-sha256>/lib/<LibraryName>_<hash>/generations/<library-generation-sha256>/o/…``
 
-**Invalidation (before each compile):** fingerprints under ``<cache>/.acmake_stamps/`` track when to delete cached ``.o`` (Ninja then rebuilds).
+**Invalidation never deletes artifacts.** Garbage collection is an explicit ``acmake cache-prune`` operation, so selecting a new immutable generation cannot race another build still using an older one. Core generations include every regular compile-input candidate under core/variant trees (including extensionless, ``.inc``, ``.ipp``, and ``.tcc`` files), normalized effective compile commands, recursively expanded response files, direct file-valued options (``-include``, ``-imacros``, specs, plugins, ``-B`` tool trees, wrappers, and other existing file arguments), platform/board configuration, explicit/environment include roots, output-affecting compiler environment, compiler/archiver identities, and the existing FQBN/build-option/SDK bucket identity. Library traversal exactly follows compiled sources plus effective include roots; normal exclusions are evaluated relative to the library root only and can never hide a compiled ``src/tests`` source or a library merely installed beneath an absolute ``tmp``/``tests`` directory.
 
-1. **Platform / global:** If **any header** under the core or variant trees changes, all cached **core**, **variant**, and **library** objects **for that 32-hex cache subtree** are removed (full wipe of those paths and ``core.a``). The fingerprint lives under ``<cache>/.acmake_stamps/platform_hdr_fp``. **``build_opt.h``** does not use this wipe: different ``build_opt.h`` **contents** select a **different** cache subtree (see the cache key paragraph above), so toggling flags does not destroy another subtree’s objects. ``build_opt.h`` is **not** scanned as a C header; it is **not** given default ``#pragma once`` or other boilerplate—only your sketch’s ``build_opt.h`` is copied when present, otherwise an **empty** file is created for recipes that ``-include`` it (build flags / defines only).
-2. **Per core ``.o``:** After invalidation, each core object is rebuilt when its **``.c`` / ``.cpp`` / …** is newer than the ``.o`` (see ``cache_compile.py``).
-3. **Per library subtree:** Each bundle’s ``.acmake_hdr_fp`` combines a digest of the library install path, ``library.properties`` bytes (version, ``depends=``, …), and **contents** of library ``*.h`` / ``*.cpp`` / … under that install (excluding ``examples/``, ``tests/``, etc.) with the **``build_opt.h`` content** digest for the **current** sketch ``build/`` copy. In normal use the cache subtree already matches that digest (see cache key); the stamp still catches odd cases (e.g. one cache path reused with different ``build_dir`` values). Mtime-only changes on library sources or on ``build_opt.h`` do **not** invalidate by themselves. Core / variant header drift is still (1).
-4. **Per library ``.o``:** Same mtime rule as (2) for the translation unit source.
+Library generations use a separate platform-header/config identity plus that library's normalized command and exactly its transitive dependency/include-root closure. Environment roots such as ``CPATH`` are considered covered only when they fall inside that specific closure, so another globally linked library cannot hide a compiler input. Consequently an unrelated core source or unrelated linked library does not evict reusable library objects.
 
-**CMake** still runs ``<python> <path/to/cache_compile.py> …`` for cached compiles (no ``acmake`` package needed on ``PYTHONPATH``). Ninja **DEPFILE** is not used for those rules; sketch objects still use ``-MMD`` / DEPFILE under ``<sketch build>/.acmake_deps/``.
+Digests are memoized within one preparation call. Across CLI invocations, independent root/scope manifest shards use separate locks and reuse SHA-256 results only when device, inode, size, nanosecond mtime, and nanosecond ctime all still match; successful scans prune removed entries. Windows and filesystems without reliable change identity bypass persistent reuse and hash content directly. A changed identity causes a stable content re-read, while touching a file may recompute its digest without selecting a different generation when bytes are unchanged.
 
-- **Clear everything:** ``acmake cache-clear`` removes the entire ``<temp>/acmake_objcache`` directory (all FQBNs / versions).
+Cached object and archive publication is process-safe and immutable. Writers take an advisory lock scoped to the individual artifact, recheck after locking, build a same-directory temporary file, and atomically publish only when the generation path does not yet exist; an existing object/archive is never replaced. Since archive inputs are themselves immutable and encoded by the generation path, a warm ``core.a`` hit needs only an existence check rather than re-hashing every object.
+
+Coverage builds (``--coverage`` or ``-ftest-coverage`` in the effective C/C++ recipes or any recursively referenced response file) do **not** use the shared object cache. Their objects and matching ``.gcno`` files remain together under the sketch build directory and are collected by the existing ``gcov/`` flow.
+
+**CMake** runs the standalone ``cache_compile.py`` and ``cache_archive.py`` wrappers for shared artifacts (no ``acmake`` package needed on ``PYTHONPATH``). Ninja **DEPFILE** is not used for cached compile rules; sketch objects still use ``-MMD`` / DEPFILE under ``<sketch build>/.acmake_deps/``.
+
+- **Clear everything:** ``acmake cache-clear`` removes the entire ``<temp>/acmake_objcache`` directory (all FQBNs / versions). Explicit clearing while builds are active is unsupported; wait for all builds to finish first.
+- **Prune old generations:** ``acmake cache-prune`` removes buckets unused for 30 days and old generations beyond the two newest in each active group. Use ``--dry-run`` to inspect the result. Pruning while builds are active is unsupported.
 - Disable cache for one build: ``acmake compile … --no-object-cache`` (``upload`` has the same flag).
 - Environment: ``ACMAKE_OBJECT_CACHE=0`` (``false``, ``no``, ``off`` also turn it off).
 - ``-v`` logs the resolved cache path as ``object cache: …``.
 
-``build_opt.h`` is copied from the sketch only when bytes differ (so mtimes do not churn every run). ``sketch.cpp`` from the preprocessor is written only when output bytes differ. Library discovery and CMake dependency lists use deterministic ordering so ``CMakeLists.txt`` stays stable when nothing real changed. For shared-cached **library** compiles, paths under the sketch ``build_dir`` from recipe ``@…`` stubs (e.g. ``build_opt.h``) are omitted from Ninja ``DEPENDS`` so a brand-new example ``build/`` does not make Ninja re-run every linked library; the compiler argv still includes those files, and (1)–(3) still invalidate when they matter. Each cached library TU also gets its own ``-I`` list (core + variant + that library + others it pulls in via ``depends=`` or ``#include`` tokens among **already linked** libraries), not the whole sketch link set, so ``WiFi.cpp`` compiles the same across examples that add unrelated libraries. For those same rules, ``-MF`` points at a depfile path **relative to the sketch build dir** (not an absolute path under ``…/OtherSketch/build/``), so Ninja does not treat a new example directory as a different command for the same shared ``.o``. ESP32 also puts ``-I{build.source.path}`` in ``compiler.cpreprocessor.flags``; that flag is **removed** from cached core/variant/lib recipes only (sketch translation units keep it) so the rule text does not embed each example’s ``.ino`` directory path. ``cmake -S … -B …`` runs only until ``CMakeCache.txt`` and ``build.ninja`` exist; later builds use ``cmake --build`` only.
+``build_opt.h`` is copied from the sketch only when bytes differ (so mtimes do not churn every run). ``sketch.cpp`` from the preprocessor is written only when output bytes differ. Library discovery and CMake dependency lists use deterministic ordering so ``CMakeLists.txt`` stays stable when nothing real changed. For shared-cached **library** compiles, paths under the sketch ``build_dir`` from recipe ``@…`` stubs (e.g. ``build_opt.h``) are omitted from Ninja ``DEPENDS`` so a brand-new example ``build/`` does not make Ninja re-run every linked library; the compiler argv still includes those files, and content-addressed bucket/generation selection keeps differing inputs separate. Each cached library TU also gets its own ``-I`` list (core + variant + that library + others it pulls in via ``depends=`` or ``#include`` tokens among **already linked** libraries), not the whole sketch link set, so ``WiFi.cpp`` compiles the same across examples that add unrelated libraries. For those same rules, ``-MF`` points at a depfile path **relative to the sketch build dir** (not an absolute path under ``…/OtherSketch/build/``), so Ninja does not treat a new example directory as a different command for the same shared ``.o``. ESP32 also puts ``-I{build.source.path}`` in ``compiler.cpreprocessor.flags``; that flag is **removed** from cached core/variant/lib recipes only (sketch translation units keep it) so the rule text does not embed each example’s ``.ino`` directory path. ``cmake -S … -B …`` runs only until ``CMakeCache.txt`` and ``build.ninja`` exist; later builds use ``cmake --build`` only.
 
 ## `acmake cache-clear`
 
-Deletes the whole shared object cache directory (``<temp>/acmake_objcache``). No arguments. Use after toolchain upgrades or if you want a clean slate for all boards.
+Deletes the whole shared object cache directory (``<temp>/acmake_objcache``). No arguments. Use after toolchain upgrades or if you want a clean slate for all boards. Do not clear the cache while any build is active.
+
+## `acmake cache-prune`
+
+Garbage-collects immutable object-cache generations without coupling deletion to invalidation. By default, a whole FQBN/build-option/SDK bucket is removed after 30 days without use. Within active buckets, expired core, library-platform, and individual-library generations are removed while the two newest entries in each group are retained.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--max-age-days DAYS` | `30` | Expiration age. Cache use is recorded at most once per day. |
+| `--keep N` | `2` | Minimum recent generations retained in each active generation group. |
+| `--dry-run` | off | Report eligible directories and bytes without deleting them. |
+
+As with `cache-clear`, do not prune while builds are active.
 
 ## `acmake upload`
 

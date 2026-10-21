@@ -184,7 +184,7 @@ def test_maybe_refresh_build_opt_mtime_only_keeps_lib_cache(tmp_path: Path) -> N
     assert lo.is_file()
 
 
-def test_maybe_refresh_wipes_core_on_header_change(tmp_path: Path) -> None:
+def test_maybe_refresh_never_wipes_legacy_core_on_header_change(tmp_path: Path) -> None:
     cache = tmp_path / "acmake_objcache" / "k"
     cache.mkdir(parents=True)
     stamps = cache / ".acmake_stamps"
@@ -214,10 +214,10 @@ def test_maybe_refresh_wipes_core_on_header_change(tmp_path: Path) -> None:
         variant_path=var,
         libraries=[],
     )
-    assert not stale.is_file()
+    assert stale.is_file()
 
 
-def test_maybe_refresh_lib_only_without_platform_change(tmp_path: Path) -> None:
+def test_maybe_refresh_never_wipes_legacy_lib_on_content_change(tmp_path: Path) -> None:
     cache = tmp_path / "acmake_objcache" / "k2"
     cache.mkdir(parents=True)
     stamps = cache / ".acmake_stamps"
@@ -274,7 +274,7 @@ def test_maybe_refresh_lib_only_without_platform_change(tmp_path: Path) -> None:
         variant_path=v,
         libraries=[lib],
     )
-    assert not lo.is_file()
+    assert lo.is_file()
 
 
 def test_maybe_refresh_lib_ignores_mtime_only_change(tmp_path: Path) -> None:
@@ -321,7 +321,6 @@ def test_maybe_refresh_lib_ignores_mtime_only_change(tmp_path: Path) -> None:
         cache, build_dir=bd, core_path=c, variant_path=v, libraries=[lib]
     )
     assert lo.is_file()
-    assert (bundle / ".acmake_hdr_fp").is_file()
 
     st = (src / "ZLib.h").stat()
     os.utime(src / "ZLib.h", (st.st_atime + 500, st.st_mtime + 500))
@@ -407,7 +406,7 @@ def test_maybe_refresh_second_sketch_build_dir_keeps_lib_cache(tmp_path: Path) -
     assert lo.is_file()
 
 
-def test_maybe_refresh_lib_wiped_when_build_opt_differs_across_build_dirs(
+def test_maybe_refresh_keeps_legacy_lib_when_build_opt_differs_across_build_dirs(
     tmp_path: Path,
 ) -> None:
     """Shared lib bundle: sketch A empty build_opt then sketch B with flags must drop Lib .o."""
@@ -470,10 +469,10 @@ def test_maybe_refresh_lib_wiped_when_build_opt_differs_across_build_dirs(
         variant_path=var,
         libraries=[lib],
     )
-    assert not lo.is_file()
+    assert lo.is_file()
 
 
-def test_maybe_refresh_library_properties_change_wipes_lib(tmp_path: Path) -> None:
+def test_maybe_refresh_library_properties_change_keeps_legacy_lib(tmp_path: Path) -> None:
     """Editing ``library.properties`` (e.g. version) changes the fingerprint and wipes that lib."""
     cache = tmp_path / "acmake_objcache" / "k_props"
     cache.mkdir(parents=True)
@@ -533,10 +532,10 @@ def test_maybe_refresh_library_properties_change_wipes_lib(tmp_path: Path) -> No
     maybe_refresh_object_cache(
         cache, build_dir=bd, core_path=c, variant_path=v, libraries=[lib2]
     )
-    assert not lo.is_file()
+    assert lo.is_file()
 
 
-def test_maybe_refresh_build_opt_change_wipes_libs(tmp_path: Path) -> None:
+def test_maybe_refresh_build_opt_change_keeps_legacy_libs(tmp_path: Path) -> None:
     cache = tmp_path / "acmake_objcache" / "k4"
     cache.mkdir(parents=True)
     stamps = cache / ".acmake_stamps"
@@ -583,7 +582,7 @@ def test_maybe_refresh_build_opt_change_wipes_libs(tmp_path: Path) -> None:
     maybe_refresh_object_cache(
         cache, build_dir=bd, core_path=c, variant_path=v, libraries=[lib]
     )
-    assert not lo.is_file()
+    assert lo.is_file()
 
 
 def test_clear_entire_object_cache_respects_temp_parent(tmp_path: Path) -> None:

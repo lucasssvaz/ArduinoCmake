@@ -14,12 +14,14 @@ from pathlib import Path
 
 from acmake.build_options_json import write_build_options_json
 from acmake.cache_invalidate import (
+    ObjectCacheGenerations,
     _build_opt_fingerprint,
     core_version_for_cache,
     maybe_refresh_object_cache,
     sdk_config_fingerprint,
 )
 from acmake.config import ArduinoPaths
+from acmake.coverage import compile_recipes_have_coverage
 from acmake.discovery import resolve_all_runtime_tools, resolve_platform_root
 from acmake.fqbn import FQBN, path_component_from_label
 from acmake.libraries import (
@@ -88,8 +90,7 @@ class BuildPlan:
     bin_path: Path | None = None
     libraries: list[Library] = field(default_factory=list)
     library_resolution_notes: list[LibraryResolveNote] = field(default_factory=list)
-    # ``<temp>/acmake_objcache/<object_cache_key>/`` when object cache is on (see prepare_build).
-    # *object_cache_key* folds in ``build_opt.h`` bytes so different flags use separate trees.
+    # Selected immutable platform generation under the established FQBN cache bucket.
     object_cache_dir: Path | None = None
     # Stems of headers under core/variant (see ``_platform_header_stems``): used when building
     # per-library ``-I`` strings for shared-cache compiles so tokens match the sketch resolver.
@@ -196,11 +197,23 @@ def _object_basename_for_translation_unit(
     return f"{key}.o"
 
 
-def _object_cache_enabled(use_object_cache: bool) -> bool:
+def _object_cache_enabled(
+    use_object_cache: bool,
+    expanded: dict[str, str] | None = None,
+    *,
+    build_dir: Path | None = None,
+) -> bool:
     if not use_object_cache:
         return False
     v = os.environ.get("ACMAKE_OBJECT_CACHE", "1").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    if v in ("0", "false", "no", "off"):
+        return False
+    return not (
+        expanded is not None
+        and compile_recipes_have_coverage(
+            expanded, working_directory=build_dir
+        )
+    )
 
 
 def _build_includes(
@@ -218,12 +231,12 @@ def _build_includes(
     return " ".join(f'-I"{p}"' for p in parts)
 
 
-def _lib_transitive_include_roots(
+def _lib_transitive_libraries(
     libraries: list[Library],
     root_lib: Library,
     platform_header_stems: frozenset[str],
-) -> list[Path]:
-    """Include roots for *root_lib* plus linked deps: ``depends=`` and ``#include`` tokens among *libraries*."""
+) -> list[Library]:
+    """Return *root_lib* plus linked ``depends=``/``#include`` dependencies."""
     stem_to_lib = header_stem_index_for_linked_libraries(libraries, platform_header_stems)
     by_name: dict[str, Library] = {}
     for lib in libraries:
@@ -252,9 +265,21 @@ def _lib_transitive_include_roots(
             if dep is not None:
                 add(dep)
 
+    return sorted(collected.values(), key=lambda item: item.name.lower())
+
+
+def _lib_transitive_include_roots(
+    libraries: list[Library],
+    root_lib: Library,
+    platform_header_stems: frozenset[str],
+) -> list[Path]:
+    """Include roots for *root_lib* and its linked dependency closure."""
+    closure = _lib_transitive_libraries(
+        libraries, root_lib, platform_header_stems
+    )
     out: list[Path] = []
     seen_path: set[Path] = set()
-    for lib in sorted(collected.values(), key=lambda L: L.name.lower()):
+    for lib in closure:
         for r in lib.include_roots:
             try:
                 rp = r.resolve()
@@ -415,7 +440,8 @@ def prepare_build(
 
     object_cache_dir: Path | None = None
     cache_root: Path | None = None
-    if _object_cache_enabled(use_object_cache):
+    cache_generations: ObjectCacheGenerations | None = None
+    if _object_cache_enabled(use_object_cache, expanded, build_dir=build_dir):
         core_ver = core_version_for_cache(expanded, platform_root)
         prop_tag = _build_properties_cache_tag(build_properties)
         sdk_fp = sdk_config_fingerprint(expanded)
@@ -427,15 +453,32 @@ def prepare_build(
             build_dir=build_dir,
             sdk_fingerprint=sdk_fp,
         )
-        object_cache_dir = cache_root
         cache_root.mkdir(parents=True, exist_ok=True)
-        maybe_refresh_object_cache(
+        platform_includes = _build_includes(expanded, [])
+        library_includes: dict[Path, str] = {}
+        library_dependencies: dict[Path, list[Library]] = {}
+        for lib in libraries:
+            root = lib.root.resolve()
+            library_includes[root] = includes_string_for_cached_lib_compile(
+                expanded, libraries, lib, platform_header_stems
+            )
+            library_dependencies[root] = _lib_transitive_libraries(
+                libraries, lib, platform_header_stems
+            )
+        cache_generations = maybe_refresh_object_cache(
             cache_root,
             build_dir=build_dir,
             core_path=Path(expanded["build.core.path"]),
             variant_path=Path(expanded["build.variant.path"]),
             libraries=libraries,
+            expanded=expanded,
+            platform_root=platform_root,
+            sketch_dir=sketch_dir,
+            platform_includes=platform_includes,
+            library_includes=library_includes,
+            library_dependencies=library_dependencies,
         )
+        object_cache_dir = cache_generations.platform_dir
 
     sources: list[SourceObject] = []
     core_path = Path(expanded["build.core.path"])
@@ -454,15 +497,17 @@ def prepare_build(
         if kind == "sketch" or cache_root is None:
             base = obj_dir
         elif kind == "core":
-            base = cache_root / "core" / "o"
+            assert object_cache_dir is not None
+            base = object_cache_dir / "core" / "o"
             base.mkdir(parents=True, exist_ok=True)
         elif kind == "variant":
-            base = cache_root / "variant" / "o"
+            assert object_cache_dir is not None
+            base = object_cache_dir / "variant" / "o"
             base.mkdir(parents=True, exist_ok=True)
         elif kind == "lib":
-            if lib is None:
+            if lib is None or cache_generations is None:
                 raise ValueError("lib= required for kind 'lib'")
-            base = _library_bundle_dir(cache_root, lib) / "o"
+            base = cache_generations.library_dir(lib) / "o"
             base.mkdir(parents=True, exist_ok=True)
         else:
             base = obj_dir
@@ -562,11 +607,8 @@ def expand_recipe_for_source(
 
 
 def _has_coverage_flags(expanded: dict[str, str]) -> bool:
-    """True when ``--coverage`` appears in any compiler extra-flags property."""
-    for key in ("compiler.c.extra_flags", "compiler.cpp.extra_flags"):
-        if "--coverage" in expanded.get(key, ""):
-            return True
-    return False
+    """Compatibility alias for effective C/C++ recipe coverage detection."""
+    return compile_recipes_have_coverage(expanded)
 
 
 def collect_gcov_notes(plan: BuildPlan) -> list[Path]:
@@ -585,7 +627,9 @@ def collect_gcov_notes(plan: BuildPlan) -> list[Path]:
     Returns the list of destination paths (empty when coverage is not enabled
     or no ``.gcno`` files exist).
     """
-    if not _has_coverage_flags(plan.expanded):
+    if not compile_recipes_have_coverage(
+        plan.expanded, working_directory=plan.build_dir
+    ):
         return []
 
     log = logging.getLogger("acmake")

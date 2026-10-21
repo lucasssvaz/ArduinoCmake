@@ -7,10 +7,12 @@ import re
 import sys
 from pathlib import Path
 
+import acmake.cache_archive as _cache_archive_mod
 import acmake.cache_compile as _cache_compile_mod
 
 from acmake.build import (
     BuildPlan,
+    _build_includes,
     expand_recipe_for_source,
     includes_string_for_cached_lib_compile,
 )
@@ -29,6 +31,7 @@ from acmake.sketch import sketch_build_project_name
 
 # Run as ``python /path/to/cache_compile.py`` so the build does not need ``acmake`` on PYTHONPATH.
 _CACHE_COMPILE_SCRIPT = str(Path(_cache_compile_mod.__file__).resolve())
+_CACHE_ARCHIVE_SCRIPT = str(Path(_cache_archive_mod.__file__).resolve())
 
 
 def _q(p: Path | str) -> str:
@@ -108,17 +111,16 @@ def _recipe_for_source(plan: BuildPlan, so) -> str:
     else:
         return ""
     inc = plan.expanded.get("includes", "")
-    if (
-        plan.object_cache_dir is not None
-        and so.kind == "lib"
-        and so.lib is not None
-    ):
-        inc = includes_string_for_cached_lib_compile(
-            plan.expanded,
-            plan.libraries,
-            so.lib,
-            plan.platform_header_stems,
-        )
+    if plan.object_cache_dir is not None:
+        if so.kind in ("core", "variant"):
+            inc = _build_includes(plan.expanded, [])
+        elif so.kind == "lib" and so.lib is not None:
+            inc = includes_string_for_cached_lib_compile(
+                plan.expanded,
+                plan.libraries,
+                so.lib,
+                plan.platform_header_stems,
+            )
     cmd = expand_recipe_for_source(
         plan.expanded, key, so.source, so.object_path, inc
     )
@@ -426,8 +428,8 @@ def _argv_set_depfile_mf(
     return out
 
 
-def _mtime_skip_cache_compile(plan: BuildPlan, so) -> bool:
-    """True for shared-cache TUs: compile only when source is newer than the .o (see ``cache_compile``)."""
+def _shared_cache_compile(plan: BuildPlan, so) -> bool:
+    """True for immutable shared-cache translation units."""
     return plan.object_cache_dir is not None and so.kind in (
         "core",
         "variant",
@@ -502,9 +504,9 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
         if not argv:
             continue
         argv, stub_deps = resolve_build_dir_at_file_argv(bd, argv)
-        mtime_cache = _mtime_skip_cache_compile(plan, so)
+        shared_cache = _shared_cache_compile(plan, so)
         argv = _argv_set_depfile_mf(
-            argv, so.dep_path, mf_relative_to=bd if mtime_cache else None
+            argv, so.dep_path, mf_relative_to=bd if shared_cache else None
         )
         rsp_deps = stub_deps + collect_at_file_dep_paths(argv)
         rsp_deps = _strip_sketch_build_deps_for_shared_lib(plan, so, rsp_deps)
@@ -512,7 +514,7 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
         if so.kind == "core":
             argv.insert(1, "-DARDUINO_CORE_BUILD")
         dep_rel = os.path.relpath(so.dep_path, bd).replace("\\", "/")
-        if mtime_cache:
+        if shared_cache:
             argv = [
                 py_exe,
                 _CACHE_COMPILE_SCRIPT,
@@ -530,7 +532,7 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
         if dep_extra:
             deps += " " + dep_extra
         lines.append(f"  DEPENDS {deps}")
-        if _emit_depfile(so.dep_path, argv) and not mtime_cache:
+        if _emit_depfile(so.dep_path, argv) and not shared_cache:
             lines.append(f"  DEPFILE {_q(dep_rel)}")
         lines.append(f"  WORKING_DIRECTORY {_q(bd)}")
         lines.append("  VERBATIM")
@@ -538,7 +540,6 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
         lines.append("")
 
     archive_path = plan.archive_path
-    archive_out = ""
     if archive_path and core_objs:
         ar_path = (
             plan.expanded.get("compiler.path", "")
@@ -548,6 +549,15 @@ def write_cmake(plan: BuildPlan, cmake_lists_path: Path | None = None) -> Path:
 
         ar_exe = expand_template(ar_path, plan.expanded).strip().strip('"')
         argv = [ar_exe, "rcs", str(archive_path)] + [str(o) for o in core_objs]
+        if plan.object_cache_dir is not None:
+            argv = [
+                py_exe,
+                _CACHE_ARCHIVE_SCRIPT,
+                str(archive_path),
+                *[str(o) for o in core_objs],
+                "--",
+                *argv,
+            ]
         lines.append("# core archive (ar rcs)")
         lines.append("add_custom_command(")
         lines.append(f"  OUTPUT {_q(archive_path)}")

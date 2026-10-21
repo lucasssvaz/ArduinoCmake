@@ -18,7 +18,10 @@ def _build_zip_bytes() -> bytes:
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(PKG.rglob("*.py")):
             arc = Path("acmake") / path.relative_to(PKG)
-            zf.write(path, arc.as_posix())
+            info = zipfile.ZipInfo(arc.as_posix(), date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, path.read_bytes())
     return buf.getvalue()
 
 
@@ -27,8 +30,7 @@ def _chunks_b64(data: bytes, width: int = 76) -> list[str]:
     return [b64[i : i + width] for i in range(0, len(b64), width)]
 
 
-def main() -> None:
-    raw = _build_zip_bytes()
+def _render_portable(raw: bytes) -> str:
     lines = _chunks_b64(raw)
     chunks_literal = "\n".join(f'    "{ln}",' for ln in lines)
 
@@ -97,8 +99,19 @@ def _run() -> int:
 if __name__ == "__main__":
     raise SystemExit(_run())
 '''
-    OUT.write_text(body, encoding="utf-8")
+    return body
+
+
+def _generated_bytes() -> bytes:
+    return _render_portable(_build_zip_bytes()).encode("utf-8")
+
+
+def main() -> None:
+    raw = _build_zip_bytes()
+    blob = _render_portable(raw).encode("utf-8")
+    OUT.write_bytes(blob)
     OUT.chmod(OUT.stat().st_mode | 0o111)
+    lines = _chunks_b64(raw)
     print(f"Wrote {OUT} ({len(raw)} bytes zip, {len(lines)} base64 lines)")
 
 

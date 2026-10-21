@@ -6,6 +6,7 @@ from acmake.build import (
     BuildPlan,
     SourceObject,
     _has_coverage_flags,
+    _object_cache_enabled,
     collect_gcov_notes,
 )
 from acmake.fqbn import FQBN
@@ -19,10 +20,14 @@ def _make_plan(
 ) -> BuildPlan:
     bd = tmp_path / "build"
     bd.mkdir(parents=True, exist_ok=True)
-    expanded = {}
-    if extra_flags:
-        expanded["compiler.c.extra_flags"] = extra_flags
-        expanded["compiler.cpp.extra_flags"] = extra_flags
+    expanded = {
+        "recipe.c.o.pattern": (
+            f'cc {extra_flags} -c "{{source_file}}" -o "{{object_file}}"'
+        ),
+        "recipe.cpp.o.pattern": (
+            f'c++ {extra_flags} -c "{{source_file}}" -o "{{object_file}}"'
+        ),
+    }
     return BuildPlan(
         fqbn=FQBN.parse("espressif:esp32:esp32"),
         platform_root=tmp_path / "platform",
@@ -47,16 +52,61 @@ def _so(tmp_path: Path, name: str, kind: str = "core") -> SourceObject:
 
 
 def test_has_coverage_flags_detects_c_flags() -> None:
-    assert _has_coverage_flags({"compiler.c.extra_flags": "--coverage -DCOVERAGE_ENABLED"})
+    assert _has_coverage_flags(
+        {"recipe.c.o.pattern": "cc --coverage -c a.c -o a.o"}
+    )
 
 
 def test_has_coverage_flags_detects_cpp_flags() -> None:
-    assert _has_coverage_flags({"compiler.cpp.extra_flags": "--coverage"})
+    assert _has_coverage_flags(
+        {"recipe.cpp.o.pattern": "c++ -ftest-coverage -c a.cpp -o a.o"}
+    )
 
 
 def test_has_coverage_flags_false_when_absent() -> None:
     assert not _has_coverage_flags({})
-    assert not _has_coverage_flags({"compiler.c.extra_flags": "-Wall"})
+    assert not _has_coverage_flags({"recipe.c.o.pattern": "cc -Wall -c a.c -o a.o"})
+
+
+def test_coverage_effective_recipes_disable_shared_object_cache() -> None:
+    for flag in ("--coverage", "-ftest-coverage"):
+        expanded = {
+            "recipe.c.o.pattern": f"cc {flag} -c a.c -o a.o",
+            "recipe.cpp.o.pattern": "c++ -Wall -c a.cpp -o a.o",
+        }
+        assert not _object_cache_enabled(True, expanded)
+
+
+def test_nested_response_file_coverage_stays_local_and_collects_gcno(
+    tmp_path: Path,
+) -> None:
+    build = tmp_path / "build"
+    build.mkdir()
+    outer = build / "outer.rsp"
+    nested = build / "nested.rsp"
+    outer.write_text("@nested.rsp\n", encoding="utf-8")
+    nested.write_text("-ftest-coverage\n", encoding="utf-8")
+    expanded = {
+        "recipe.c.o.pattern": "cc @outer.rsp -c a.c -o a.o",
+        "recipe.cpp.o.pattern": "c++ -c a.cpp -o a.o",
+    }
+    assert not _object_cache_enabled(True, expanded, build_dir=build)
+
+    so = _so(tmp_path, "nested.cpp.o", "core")
+    gcno = so.object_path.with_name("nested.cpp.gcno")
+    gcno.write_bytes(b"matching-notes")
+    plan = BuildPlan(
+        fqbn=FQBN.parse("espressif:esp32:esp32"),
+        platform_root=tmp_path / "platform",
+        sketch_dir=tmp_path / "sketch",
+        build_dir=build,
+        expanded=expanded,
+        sources=[so],
+        object_cache_dir=None,
+    )
+    copied = collect_gcov_notes(plan)
+    assert len(copied) == 1
+    assert copied[0].read_bytes() == b"matching-notes"
 
 
 def test_collect_gcov_notes_noop_without_coverage(tmp_path: Path) -> None:
