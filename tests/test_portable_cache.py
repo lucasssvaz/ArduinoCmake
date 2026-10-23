@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -129,3 +130,39 @@ pathlib.Path(sys.argv[2]).write_bytes(b"portable-archive")
     assert smoke.returncode == 0, smoke.stderr
     assert "compile" in smoke.stdout
     assert "cache-prune" in smoke.stdout
+
+
+def test_concurrent_first_extract_does_not_see_partial_bundle(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    generator_namespace = runpy.run_path(
+        str(root / "tools" / "gen_arduino_cmake_portable.py")
+    )
+    script = tmp_path / "arduino_cmake.py"
+    script.write_bytes(generator_namespace["_generated_bytes"]())
+    home = tmp_path / "home"
+    workers = 12
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    def run_help() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(run_help) for _ in range(workers)]
+        results = [future.result() for future in futures]
+    assert [result.returncode for result in results] == [0] * workers, [
+        result.stderr for result in results
+    ]
+    cache = home / ".cache" / "arduino_cmake_portable"
+    published = [path for path in cache.iterdir() if not path.name.startswith(".")]
+    assert len(published) == 1
+    assert (published[0] / ".ok").is_file()
+    assert (published[0] / "acmake" / "board_list.py").is_file()
+    leftovers = [path for path in cache.iterdir() if path.name.startswith(".")]
+    assert leftovers == []
