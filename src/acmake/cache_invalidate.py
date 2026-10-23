@@ -173,9 +173,7 @@ def _fingerprint_library_cache_inputs(
     prop = lib.root / "library.properties"
     if prop.is_file():
         prop_digest = (
-            content_cache.digest(
-                prop, root=lib.root, scope="library"
-            )
+            content_cache.digest(prop, root=lib.root, scope="library")
             if content_cache is not None
             else hashlib.sha256(_read_bytes(prop, file_bytes_cache)).hexdigest()
         )
@@ -357,7 +355,7 @@ def _replace_path_prefix(value: str, path: Path | None, marker: str) -> str:
 def _is_sketch_include(token: str, sketch_dir: Path | None) -> bool:
     if sketch_dir is None or not token.startswith("-I"):
         return False
-    raw = token[2:].strip('"\'')
+    raw = token[2:].strip("\"'")
     try:
         return Path(raw).resolve() == sketch_dir.resolve()
     except OSError:
@@ -392,9 +390,9 @@ def _response_file_inputs(
         data = _read_bytes(path, file_bytes_cache)
         fingerprints.append(
             (
-                _replace_path_prefix(
-                    str(resolved), build_dir, "<BUILD>"
-                ).replace("\\", "/"),
+                _replace_path_prefix(str(resolved), build_dir, "<BUILD>").replace(
+                    "\\", "/"
+                ),
                 hashlib.sha256(data).hexdigest(),
             )
         )
@@ -431,7 +429,7 @@ def _include_roots_from_tokens(
                     raw = token[len(prefix) :]
                     break
             i += 1
-        raw = raw.strip().strip('"\'')
+        raw = raw.strip().strip("\"'")
         if not raw:
             continue
         path = Path(raw)
@@ -454,7 +452,7 @@ def _direct_compiler_inputs(
     joined_dir = ("-B", "--sysroot=", "-isysroot")
 
     def resolve(raw: str) -> Path:
-        path = Path(raw.strip().strip('"\''))
+        path = Path(raw.strip().strip("\"'"))
         if not path.is_absolute() and build_dir is not None:
             path = build_dir / path
         return path
@@ -700,9 +698,7 @@ def _normalized_compile_commands(
             digest = (
                 content_cache.digest(path)
                 if content_cache is not None
-                else hashlib.sha256(
-                    _read_bytes(path, file_bytes_cache)
-                ).hexdigest()
+                else hashlib.sha256(_read_bytes(path, file_bytes_cache)).hexdigest()
             )
             direct_inputs.append((str(path).replace("\\", "/"), digest))
         for root in direct_directories:
@@ -839,9 +835,8 @@ def _compile_context_fingerprint(
             ).encode("ascii")
         )
     if scope == "platform":
-        ar_raw = (
-            str(expanded.get("compiler.path", ""))
-            + str(expanded.get("compiler.ar.cmd", "ar"))
+        ar_raw = str(expanded.get("compiler.path", "")) + str(
+            expanded.get("compiler.ar.cmd", "ar")
         )
         ar_executable = expand_template(ar_raw, dict(expanded)).strip().strip('"')
         if ar_executable not in tool_identity_cache:
@@ -851,9 +846,7 @@ def _compile_context_fingerprint(
                 content_cache=content_cache,
             )
         h.update(
-            repr(
-                ("archive", tool_identity_cache[ar_executable], "rcs")
-            ).encode("utf-8")
+            repr(("archive", tool_identity_cache[ar_executable], "rcs")).encode("utf-8")
         )
         h.update(b"\0")
     for add_core_define in variants:
@@ -966,18 +959,19 @@ def maybe_refresh_object_cache(
     """
     cache_root.mkdir(parents=True, exist_ok=True)
     mark_cache_path_used(cache_root)
-    content_cache = ShardedFingerprintCache(
-        cache_root / ".acmake_fingerprints"
-    )
+    content_cache = ShardedFingerprintCache(cache_root / ".acmake_fingerprints")
     tool_identity_cache: dict[str, tuple[str, str]] = {}
     file_bytes_cache: dict[Path, bytes] = {}
     tree_digest_cache: dict[Path, str] = {}
     library_digest_cache: dict[Path, str] = {}
+    covered_roots = {core_path.resolve(), variant_path.resolve()}
+    if sketch_dir is not None:
+        try:
+            covered_roots.add(sketch_dir.resolve())
+        except OSError:
+            pass
     platform_covered_roots = tuple(
-        sorted(
-            {core_path.resolve(), variant_path.resolve()},
-            key=lambda path: str(path).lower(),
-        )
+        sorted(covered_roots, key=lambda path: str(path).lower())
     )
     header_fingerprint = _platform_header_fingerprint(
         core_path,

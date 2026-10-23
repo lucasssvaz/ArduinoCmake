@@ -47,8 +47,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 
 def _expanded(compiler: Path, *, define: str = "-DFEATURE=1") -> dict[str, str]:
     recipe = (
-        f'"{compiler}" {define} {{includes}} -c '
-        '"{source_file}" -o "{object_file}"'
+        f'"{compiler}" {define} {{includes}} -c "{{source_file}}" -o "{{object_file}}"'
     )
     return {
         "recipe.c.o.pattern": recipe,
@@ -158,7 +157,9 @@ def test_core_source_change_does_not_invalidate_library_generation(
         variant_path=variant,
         libraries=[lib],
     )
-    (core / "main.cpp").write_text("// unrelated core source change\n", encoding="utf-8")
+    (core / "main.cpp").write_text(
+        "// unrelated core source change\n", encoding="utf-8"
+    )
     second = maybe_refresh_object_cache(
         cache,
         build_dir=build,
@@ -475,10 +476,7 @@ def test_build_path_is_normalized_but_response_file_content_is_not(
 
     def expanded(build: Path) -> dict[str, str]:
         response = build / "flags.rsp"
-        recipe = (
-            f'"{compiler}" "@{response}" '
-            '-c "{source_file}" -o "{object_file}"'
-        )
+        recipe = f'"{compiler}" "@{response}" -c "{{source_file}}" -o "{{object_file}}"'
         return {"recipe.c.o.pattern": recipe}
 
     common = dict(
@@ -501,6 +499,56 @@ def test_build_path_is_normalized_but_response_file_content_is_not(
         build_dir=build_b, expanded=expanded(build_b), **common
     )
     assert changed.platform_dir != first.platform_dir
+
+
+def test_sketch_include_path_does_not_select_a_new_core_generation(
+    tmp_path: Path,
+) -> None:
+    """ESP32 ``compiler.cpreprocessor.flags`` adds ``-I{build.source.path}``.
+
+    That path is unique per example. Hashing it into the core generation forced
+    every CI sketch to rebuild core instead of reusing master's shared ``core/o``.
+    """
+    cache, build, core, variant = _inputs(tmp_path)
+    compiler = tmp_path / "compiler"
+    compiler.write_bytes(b"toolchain")
+    sketch_a = tmp_path / "examples" / "Fan"
+    sketch_b = tmp_path / "examples" / "OnOff"
+    sketch_a.mkdir(parents=True)
+    sketch_b.mkdir(parents=True)
+    (sketch_a / "Fan.ino").write_text("void setup() {}\n", encoding="utf-8")
+    (sketch_b / "OnOff.ino").write_text("void setup() {}\n", encoding="utf-8")
+    lib = _library(tmp_path / "Matter", "Matter")
+
+    def expanded(sketch: Path) -> dict[str, str]:
+        recipe = (
+            f'"{compiler}" -I"{sketch}" {{includes}} -c '
+            '"{source_file}" -o "{object_file}"'
+        )
+        return {
+            "recipe.c.o.pattern": recipe,
+            "recipe.cpp.o.pattern": recipe,
+        }
+
+    common = dict(
+        cache_root=cache,
+        build_dir=build,
+        core_path=core,
+        variant_path=variant,
+        libraries=[lib],
+        platform_root=tmp_path,
+        platform_includes=f'-I"{core}" -I"{variant}"',
+        library_includes={lib.root: f'-I"{lib.root / "src"}"'},
+        library_dependencies={lib.root: [lib]},
+    )
+    first = maybe_refresh_object_cache(
+        sketch_dir=sketch_a, expanded=expanded(sketch_a), **common
+    )
+    second = maybe_refresh_object_cache(
+        sketch_dir=sketch_b, expanded=expanded(sketch_b), **common
+    )
+    assert first.platform_dir == second.platform_dir
+    assert first.library_dir(lib) == second.library_dir(lib)
 
 
 def test_unreadable_generation_input_fails_without_deleting_prior(
@@ -541,7 +589,9 @@ def test_unreadable_generation_input_fails_without_deleting_prior(
     assert artifact.read_bytes() == b"prior"
 
 
-@pytest.mark.parametrize("name", ["macros.inc", "templates.ipp", "types.tcc", "Kconfig"])
+@pytest.mark.parametrize(
+    "name", ["macros.inc", "templates.ipp", "types.tcc", "Kconfig"]
+)
 def test_platform_auxiliary_compile_inputs_select_new_generation(
     tmp_path: Path, name: str
 ) -> None:
@@ -742,8 +792,7 @@ def test_compiler_B_prefix_tree_is_fingerprinted(tmp_path: Path) -> None:
     script.write_text("before\n", encoding="utf-8")
     expanded = {
         "recipe.c.o.pattern": (
-            f'"{compiler}" -B"{prefix}" -c '
-            '"{source_file}" -o "{object_file}"'
+            f'"{compiler}" -B"{prefix}" -c "{{source_file}}" -o "{{object_file}}"'
         )
     }
     args = dict(
@@ -837,8 +886,7 @@ def test_new_and_deleted_tree_files_change_generation_and_prune_manifest(
     compiler.write_bytes(b"compiler")
     expanded = {
         "recipe.c.o.pattern": (
-            f'"{compiler}" -I"{include}" -c '
-            '"{source_file}" -o "{object_file}"'
+            f'"{compiler}" -I"{include}" -c "{{source_file}}" -o "{{object_file}}"'
         )
     }
     args = dict(
@@ -883,8 +931,7 @@ def test_explicit_and_environment_include_roots_are_fingerprinted(
     monkeypatch.setenv("CPATH", str(environment))
     expanded = {
         "recipe.c.o.pattern": (
-            f'"{compiler}" -I"{explicit}" -c '
-            '"{source_file}" -o "{object_file}"'
+            f'"{compiler}" -I"{explicit}" -c "{{source_file}}" -o "{{object_file}}"'
         )
     }
     args = dict(
@@ -943,7 +990,9 @@ def test_library_digest_reads_are_memoized_per_prepare_invocation(
     )
     elapsed = time.perf_counter() - started
     compile_inputs = [
-        path for path in counts if any(path.is_relative_to(lib.root) for lib in libraries)
+        path
+        for path in counts
+        if any(path.is_relative_to(lib.root) for lib in libraries)
     ]
     assert compile_inputs
     assert max(counts[path] for path in compile_inputs) == 1
@@ -957,9 +1006,7 @@ def test_persistent_manifest_reuses_unchanged_content_across_invocations(
     cache, build, core, variant = _inputs(tmp_path)
     lib = _library(tmp_path / "Lib", "Lib")
     for index in range(64):
-        (lib.root / "src" / f"generated-{index}.inc").write_bytes(
-            bytes([index]) * 4096
-        )
+        (lib.root / "src" / f"generated-{index}.inc").write_bytes(bytes([index]) * 4096)
     args = dict(
         cache_root=cache,
         build_dir=build,
