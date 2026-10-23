@@ -129,8 +129,12 @@ def test_publishes_all_supported_output_argument_forms(
         elif "--output" in argv:
             output = Path(argv[argv.index("--output") + 1])
         else:
-            token = next(a for a in argv if a.startswith("-o") or a.startswith("--output="))
-            output = Path(token.split("=", 1)[1] if token.startswith("--output=") else token[2:])
+            token = next(
+                a for a in argv if a.startswith("-o") or a.startswith("--output=")
+            )
+            output = Path(
+                token.split("=", 1)[1] if token.startswith("--output=") else token[2:]
+            )
         seen.append(output)
         output.write_bytes(b"complete-object")
         return mock.Mock(returncode=0)
@@ -146,6 +150,48 @@ def test_publishes_all_supported_output_argument_forms(
     assert cache_compile_main(argv) == 0
     assert obj.read_bytes() == b"complete-object"
     assert seen[0] != obj
+    assert seen[0].parent == obj.parent
+
+
+def _flip_separators(path: str) -> str:
+    return path.replace("/", "\\") if "/" in path else path.replace("\\", "/")
+
+
+@pytest.mark.parametrize("form", ["combined", "long", "long-equals"])
+def test_output_argument_matches_flipped_separators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, form: str
+) -> None:
+    src = tmp_path / "source.cpp"
+    obj = tmp_path / "output.o"
+    src.write_text("// source\n", encoding="utf-8")
+    flipped = _flip_separators(str(obj))
+    seen: list[Path] = []
+
+    def fake_run(argv: list[str], **_kw):
+        if "-o" in argv:
+            output = Path(argv[argv.index("-o") + 1])
+        elif "--output" in argv:
+            output = Path(argv[argv.index("--output") + 1])
+        else:
+            token = next(
+                a for a in argv if a.startswith("-o") or a.startswith("--output=")
+            )
+            output = Path(
+                token.split("=", 1)[1] if token.startswith("--output=") else token[2:]
+            )
+        seen.append(output)
+        output.write_bytes(b"complete-object")
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr("acmake.cache_compile.subprocess.run", fake_run)
+    output_args = {
+        "combined": ["-o" + flipped],
+        "long": ["--output", flipped],
+        "long-equals": ["--output=" + flipped],
+    }[form]
+    argv = [str(obj), str(src), "--", "compiler", *output_args]
+    assert cache_compile_main(argv) == 0
+    assert obj.read_bytes() == b"complete-object"
     assert seen[0].parent == obj.parent
 
 
@@ -241,9 +287,7 @@ def test_partial_temporary_output_is_never_visible_at_final_path(
     monkeypatch.setattr("acmake.cache_compile.subprocess.run", fake_run)
     args = [str(obj), str(src), "--", "cc", "-o", str(obj)]
     result: list[int] = []
-    worker = threading.Thread(
-        target=lambda: result.append(cache_compile_main(args))
-    )
+    worker = threading.Thread(target=lambda: result.append(cache_compile_main(args)))
     worker.start()
     assert halfway.wait(2)
     assert not obj.exists()

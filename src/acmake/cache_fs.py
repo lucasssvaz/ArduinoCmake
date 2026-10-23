@@ -13,6 +13,20 @@ from typing import BinaryIO, Iterator
 _IS_WINDOWS = os.name == "nt"
 
 
+def normalized_path_token(value: str | Path) -> str:
+    """Compare path tokens without requiring identical separators.
+
+    CMake ``COMMAND`` + ``VERBATIM`` on Windows rewrites ``\\`` to ``/`` in argv,
+    while ``pathlib.Path`` prints native backslashes. Exact string equality then
+    fails even though both names refer to the same archive or object.
+    """
+    return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
+
+
+def paths_refer_to_same_location(left: str | Path, right: str | Path) -> bool:
+    return normalized_path_token(left) == normalized_path_token(right)
+
+
 def lock_path_for(artifact: Path) -> Path:
     """Return the persistent advisory-lock file used for *artifact*."""
     return artifact.with_name(f".{artifact.name}.lock")

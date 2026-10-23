@@ -14,6 +14,7 @@ from acmake.cache_fs import (
     artifact_lock,
     atomic_replace,
     atomic_write_text,
+    paths_refer_to_same_location,
     same_directory_temp_path,
 )
 
@@ -42,10 +43,9 @@ def _redirect_archive_argument(
     argv: list[str], archive: Path, temporary_archive: Path
 ) -> list[str] | None:
     out = list(argv)
-    expected = str(archive)
     found = False
     for i, token in enumerate(out):
-        if token == expected:
+        if paths_refer_to_same_location(token, archive):
             out[i] = str(temporary_archive)
             found = True
     return out if found else None

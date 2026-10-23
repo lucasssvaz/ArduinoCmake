@@ -16,8 +16,22 @@ from acmake.cache_fs import (
     artifact_lock,
     atomic_write_text,
     lock_path_for,
+    paths_refer_to_same_location,
     same_directory_temp_path,
 )
+
+
+def test_path_tokens_match_across_slash_variants() -> None:
+    windows_native = (
+        r"C:\Users\runneradmin\AppData\Local\Temp\acmake_objcache\abc\core\core.a"
+    )
+    cmake_verbatim = (
+        "C:/Users/runneradmin/AppData/Local/Temp/acmake_objcache/abc/core/core.a"
+    )
+    assert paths_refer_to_same_location(windows_native, cmake_verbatim)
+    assert paths_refer_to_same_location(windows_native + "\\", cmake_verbatim)
+    assert paths_refer_to_same_location(windows_native, cmake_verbatim + "/")
+    assert not paths_refer_to_same_location(windows_native, cmake_verbatim + ".bak")
 
 
 def test_artifact_lock_serializes_same_artifact(tmp_path: Path) -> None:

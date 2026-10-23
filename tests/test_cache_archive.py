@@ -10,7 +10,15 @@ from unittest import mock
 
 import pytest
 
-from acmake.cache_archive import archive_stamp_path, main as cache_archive_main
+from acmake.cache_archive import (
+    _redirect_archive_argument,
+    archive_stamp_path,
+    main as cache_archive_main,
+)
+
+
+def _flip_separators(path: str) -> str:
+    return path.replace("/", "\\") if "/" in path else path.replace("\\", "/")
 
 
 def _args(archive: Path, objects: list[Path]) -> list[str]:
@@ -33,6 +41,54 @@ def _fake_archiver(payload: bytes, *, returncode: int = 0, delay: float = 0):
         return mock.Mock(returncode=returncode)
 
     return run
+
+
+def test_redirect_accepts_cmake_forward_slash_windows_archive_path() -> None:
+    archive = Path(
+        r"C:\Users\runneradmin\AppData\Local\Temp\acmake_objcache\abc\core\core.a"
+    )
+    temporary = archive.with_name(".core.a.tmp-1")
+    cmake_archive = str(archive).replace("\\", "/")
+    redirected = _redirect_archive_argument(
+        [
+            r"C:\tools\xtensa-esp-elf-ar.exe",
+            "rcs",
+            cmake_archive,
+            cmake_archive.replace("core.a", "o/main.cpp.o"),
+        ],
+        archive,
+        temporary,
+    )
+    assert redirected is not None
+    assert redirected[2] == str(temporary)
+    assert redirected[3].endswith("main.cpp.o")
+
+
+def test_archive_publishes_when_archiver_argv_uses_flipped_separators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "cache with spaces" / "core.a"
+    archive.parent.mkdir()
+    obj = tmp_path / "one.o"
+    obj.write_bytes(b"object")
+    run = mock.Mock(side_effect=_fake_archiver(b"!<arch>\nvalid"))
+    monkeypatch.setattr("acmake.cache_archive.subprocess.run", run)
+    args = [
+        str(archive),
+        str(obj),
+        "--",
+        "ar",
+        "rcs",
+        _flip_separators(str(archive)),
+        str(obj),
+    ]
+
+    assert cache_archive_main(args) == 0
+    assert archive.read_bytes() == b"!<arch>\nvalid"
+    assert run.call_count == 1
+    redirected_archive = Path(run.call_args[0][0][2])
+    assert redirected_archive != archive
+    assert redirected_archive.parent == archive.parent
 
 
 def test_archive_publishes_and_warm_call_skips(

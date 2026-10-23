@@ -9,7 +9,12 @@ from pathlib import Path
 if not __package__:  # Direct script: prefer this bundle over installed acmake.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from acmake.cache_fs import artifact_lock, atomic_replace, same_directory_temp_path
+from acmake.cache_fs import (
+    artifact_lock,
+    atomic_replace,
+    paths_refer_to_same_location,
+    same_directory_temp_path,
+)
 
 
 def _strip_redundant_outer_double_quotes(s: str) -> str:
@@ -31,7 +36,6 @@ def _replace_output_argument(
 ) -> list[str] | None:
     """Redirect GCC-style ``-o`` output to a same-directory temporary path."""
     out = list(argv)
-    expected = str(expected_output)
     found = False
     i = 0
     while i < len(out):
@@ -39,16 +43,20 @@ def _replace_output_argument(
         if token in ("-o", "--output"):
             if i + 1 >= len(out):
                 return None
-            if token == "-o" or out[i + 1] == expected:
+            if token == "-o" or paths_refer_to_same_location(
+                out[i + 1], expected_output
+            ):
                 out[i + 1] = str(temporary_output)
                 found = True
             i += 2
             continue
         if token.startswith("-o") and len(token) > 2:
-            if token[2:] == expected:
+            if paths_refer_to_same_location(token[2:], expected_output):
                 out[i] = "-o" + str(temporary_output)
                 found = True
-        elif token.startswith("--output=") and token[len("--output=") :] == expected:
+        elif token.startswith("--output=") and paths_refer_to_same_location(
+            token[len("--output=") :], expected_output
+        ):
             out[i] = "--output=" + str(temporary_output)
             found = True
         i += 1
