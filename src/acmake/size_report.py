@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import subprocess
 
@@ -120,9 +119,7 @@ def _basic_summary_lines(expanded: dict[str, str], stdout: str) -> list[str]:
     elif data is not None:
         lines.append(f"Dynamic memory: {data} bytes (from recipe.size.regex.data).")
     if eep is not None and max_e:
-        lines.append(
-            f"EEPROM: {eep} bytes{pct(eep, max_e)}. Maximum is {max_e} bytes."
-        )
+        lines.append(f"EEPROM: {eep} bytes{pct(eep, max_e)}. Maximum is {max_e} bytes.")
     return lines
 
 
@@ -144,9 +141,13 @@ def _basic_overflow_errors(expanded: dict[str, str], stdout: str) -> list[str]:
     max_p = _int_or_none(expanded.get("upload.maximum_size") or "")
     max_d = _int_or_none(expanded.get("upload.maximum_data_size") or "")
     if prog is not None and max_p is not None and prog > max_p:
-        errors.append(f"Sketch too big: {prog} bytes exceeds the maximum of {max_p} bytes.")
+        errors.append(
+            f"Sketch too big: {prog} bytes exceeds the maximum of {max_p} bytes."
+        )
     if data is not None and max_d is not None and data > max_d:
-        errors.append(f"Not enough memory: {data} bytes of dynamic memory exceeds the maximum of {max_d} bytes.")
+        errors.append(
+            f"Not enough memory: {data} bytes of dynamic memory exceeds the maximum of {max_d} bytes."
+        )
     return errors
 
 
@@ -163,7 +164,9 @@ def print_size_report(plan: BuildPlan) -> bool:
     print("--- Memory usage ---")
     cmd, kind = resolve_size_command(plan.expanded)
     if not cmd:
-        print("Memory usage: (no recipe.size.pattern / recipe.advanced_size.pattern for this platform)")
+        print(
+            "Memory usage: (no recipe.size.pattern / recipe.advanced_size.pattern for this platform)"
+        )
         return True
 
     argv = split_recipe(cmd)
@@ -173,24 +176,16 @@ def print_size_report(plan: BuildPlan) -> bool:
 
     bd = plan.build_dir.resolve()
     try:
-        if os.name == "nt":
-            p = subprocess.run(
-                ["cmd", "/c", cmd],
-                cwd=str(bd),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        else:
-            p = subprocess.run(
-                ["/bin/sh", "-c", cmd],
-                cwd=str(bd),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+        # Run argv directly. ``cmd /c`` plus ``list2cmdline`` re-escapes quotes and
+        # breaks ``"{compiler.path}{compiler.size.cmd}" -A "{build.path}/....elf"``.
+        p = subprocess.run(
+            argv,
+            cwd=str(bd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     except OSError as e:
         logger.warning("size recipe failed to run: %s", e)
         print(f"Memory usage: (could not run size recipe: {e})")
@@ -213,13 +208,17 @@ def print_size_report(plan: BuildPlan) -> bool:
             print()
             for ln in lines:
                 print(ln)
+        elif p.returncode != 0:
+            print(f"Memory usage: size tool exited {p.returncode}")
+            if err:
+                print(err)
+            if out:
+                print(out)
         else:
             print(
                 "Memory usage: no summary lines (platform needs recipe.size.regex / "
                 "recipe.size.regex.data matching the size tool output, and upload.maximum_* for percentages)."
             )
-        if err and p.returncode != 0:
-            print(err)
         if p.returncode != 0:
             logger.warning("size recipe exited with code %s", p.returncode)
         errors = _basic_overflow_errors(plan.expanded, p.stdout or "")

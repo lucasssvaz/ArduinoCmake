@@ -1,12 +1,17 @@
 """Size recipe resolution and regex helpers."""
 
 import re
+from pathlib import Path
+from unittest import mock
 
+from acmake.build import BuildPlan
+from acmake.fqbn import FQBN
 from acmake.size_report import (
     _basic_overflow_errors,
     _basic_summary_lines,
     _sum_regex_matches,
     _try_print_advanced_json,
+    print_size_report,
     resolve_size_command,
 )
 
@@ -80,7 +85,9 @@ Program:    1234 bytes
 
 
 def test_basic_overflow_none_when_fits():
-    stdout = ".flash.text   1000000   0\n.dram0.data   1000   0\n.dram0.bss   2000   0\n"
+    stdout = (
+        ".flash.text   1000000   0\n.dram0.data   1000   0\n.dram0.bss   2000   0\n"
+    )
     assert _basic_overflow_errors(_ESP_LIKE, stdout) == []
 
 
@@ -105,7 +112,69 @@ def test_basic_overflow_ignored_without_limits():
 
 
 def test_advanced_json_severity_error_does_not_fit(capsys):
-    handled, fits = _try_print_advanced_json('{"output": "Sketch too big", "severity": "error"}')
+    handled, fits = _try_print_advanced_json(
+        '{"output": "Sketch too big", "severity": "error"}'
+    )
     assert handled and not fits
     handled, fits = _try_print_advanced_json('{"output": "ok", "severity": "info"}')
     assert handled and fits
+
+
+def _size_plan(tmp_path: Path, size_pattern: str) -> BuildPlan:
+    build = tmp_path / "build"
+    build.mkdir()
+    elf = build / "Sketch.ino.elf"
+    elf.write_bytes(b"\x7fELF")
+    return BuildPlan(
+        fqbn=FQBN.parse("espressif:esp32:esp32"),
+        platform_root=tmp_path,
+        sketch_dir=tmp_path / "Sketch",
+        build_dir=build,
+        expanded={
+            "recipe.size.pattern": size_pattern,
+            **_ESP_LIKE,
+        },
+        elf_path=elf,
+    )
+
+
+def test_size_report_runs_split_argv_not_cmd(tmp_path: Path, monkeypatch) -> None:
+    plan = _size_plan(
+        tmp_path,
+        '"C:/tools/xtensa-esp-elf-size" -A "{build.path}/{build.project_name}.elf"',
+    )
+    plan.expanded["build.path"] = str(plan.build_dir).replace("\\", "/")
+    plan.expanded["build.project_name"] = "Sketch.ino"
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **_kw):
+        seen.append(list(argv))
+        return mock.Mock(
+            returncode=0,
+            stdout=".flash.text   1000   0\n.dram0.data   20   0\n.dram0.bss   30   0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("acmake.size_report.subprocess.run", fake_run)
+    assert print_size_report(plan) is True
+    assert len(seen) == 1
+    assert seen[0][0] == "C:/tools/xtensa-esp-elf-size"
+    assert seen[0][1] == "-A"
+    assert seen[0][0] != "cmd"
+    assert "cmd" not in seen[0]
+
+
+def test_failed_size_tool_prints_exit_status(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    plan = _size_plan(tmp_path, "size-tool -A sketch.elf")
+
+    def fake_run(argv, **_kw):
+        return mock.Mock(returncode=1, stdout="", stderr="size: no such file")
+
+    monkeypatch.setattr("acmake.size_report.subprocess.run", fake_run)
+    assert print_size_report(plan) is True
+    captured = capsys.readouterr()
+    assert "size tool exited 1" in captured.out
+    assert "size: no such file" in captured.out
+    assert "no summary lines" not in captured.out
