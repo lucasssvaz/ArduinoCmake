@@ -58,7 +58,8 @@ Generate CMake in the build directory, run CMake + Ninja, run optional post-buil
 | `--ide-version` | no | Value for `runtime.ide.version` style defines (default: `10607`). |
 | `--clean` | no | Delete the build directory before configuring. |
 | `--no-preprocessor` | no | Skip `arduino-preprocessor`; concatenates `.ino` files only (may break link if the sketch needs prototypes). |
-| `--export-binaries` | no | After a successful build, run `recipe.hooks.savehex.presavehex` / `postsavehex` (same idea as `arduino-cli --export-binaries`). |
+| `--export-binaries` | no | After a successful build, copy the built artifacts (files named after `build.project_name`) to `<sketch>/build/<vendor>.<arch>.<board>`, bracketed by `recipe.hooks.savehex.presavehex` / `postsavehex` (same idea as `arduino-cli --export-binaries`). |
+| `--export-dir DIR` | no | Export built artifacts to `DIR` (implies `--export-binaries`; same as `arduino-cli --export-dir`). |
 | `--no-object-cache` | no | Keep all `.o` files and `core.a` under the sketch build dir instead of the shared temp cache (see below). |
 | `--warnings LEVEL` | no | One of `none`, `default`, `more`, `all`: sets ``compiler.warning_flags`` from ``compiler.warning_flags.<LEVEL>`` in ``platform.txt`` (same as arduino-cli ``--warnings``). With the shared object cache on, this selects a separate cache subtree so flags stay consistent. |
 | `--build-property KEY=VALUE` | no | Override a merged platform/board property (repeatable; same as arduino-cli ``--build-property``). First ``=`` separates key from value, so values may contain ``=``. Changes the object-cache bucket when the shared cache is on. |
@@ -77,6 +78,30 @@ acmake compile --fqbn 'espressif:esp32:esp32s3:USBMode=default' --sketch /path/t
 acmake compile --fqbn espressif:esp32:esp32s3 --sketch /path/to/Sketch \
   --build-property 'compiler.warning_flags.all=-Wall -Werror=all -Wextra'
 ```
+
+### Platform hooks (`recipe.hooks.*`)
+
+All Arduino platform-spec hook phases are supported and run at their documented boundaries:
+
+| Phase | Runs |
+|-------|------|
+| `recipe.hooks.prebuild` | before sketch preprocessing and library discovery |
+| `recipe.hooks.sketch.prebuild` | immediately before sketch compilation |
+| `recipe.hooks.sketch.postbuild` | immediately after sketch compilation |
+| `recipe.hooks.libraries.prebuild` | immediately before library compilation |
+| `recipe.hooks.libraries.postbuild` | immediately after library compilation |
+| `recipe.hooks.core.prebuild` | immediately before core/variant compilation |
+| `recipe.hooks.core.postbuild` | immediately after core/variant compilation (`core.a` built) |
+| `recipe.hooks.linking.prelink` | immediately before linking |
+| `recipe.hooks.linking.postlink` | immediately after linking |
+| `recipe.hooks.objcopy.preobjcopy` | after `linking.postlink`, before `recipe.objcopy.*` |
+| `recipe.hooks.objcopy.postobjcopy` | after all `recipe.objcopy.*` outputs |
+| `recipe.hooks.savehex.presavehex` | before exporting binaries (`--export-binaries` / `--export-dir`) |
+| `recipe.hooks.savehex.postsavehex` | after exporting binaries |
+
+Hook commands are expanded with the merged platform/board properties (plus runtime tool paths) and run from the build directory, in numeric `NUMBER` order, through the platform’s shell (`/bin/sh`, or `cmd`/`bash` on Windows). `{...}` placeholders are expanded before execution.
+
+Sketch, library, core, and linking hooks need exact ordering, so when any of them exist acmake builds one Ninja milestone target per stage (sketch → libraries → core → link → objcopy) and runs the matching hooks between stages. When none of those hooks are defined, acmake keeps the faster single-invocation parallel build. `objcopy` hooks are always embedded in the generated CMake/Ninja graph.
 
 ### Shared object cache (default on)
 
